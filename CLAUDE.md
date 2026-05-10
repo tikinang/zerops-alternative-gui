@@ -127,7 +127,24 @@ Do not `git init` inside `/var/www/appdev/` — that path's `.git` is platform-m
 
 ## Versioning the source
 
-The source of truth lives at `https://github.com/tikinang/zerops-alternative-gui`. Push from a git checkout outside the SSHFS mount (or from a clean local clone). The platform's `.git` inside `/var/www/appdev/` is for ZCP's push-deploy bookkeeping, not user history.
+The source of truth lives at `https://github.com/tikinang/zerops-alternative-gui`. The platform's `.git` inside `/var/www/appdev/` is push-deploy bookkeeping — never commit there.
+
+A working clone lives on the ZCP host at **`/home/zerops/repos/zerops-alternative-gui`** authenticated via `GITHUB_REPO_PAT` (env var on the `zcp` service). Iteration loop from this session:
+
+```bash
+# 1. Sync the SSHFS mount into the working clone (excludes node_modules, .env, dist, .git)
+rsync -a --delete \
+  --exclude='.git' --exclude='node_modules' --exclude='.env' \
+  --exclude='dist' --exclude='.DS_Store' --exclude='*.log' \
+  /var/www/appdev/ /home/zerops/repos/zerops-alternative-gui/
+
+# 2. Commit + push
+git -C /home/zerops/repos/zerops-alternative-gui add -A
+git -C /home/zerops/repos/zerops-alternative-gui commit -m "..."
+git -C /home/zerops/repos/zerops-alternative-gui push
+```
+
+Author config is per-repo (`tikinang <tikinang@gmail.com>`); never touch global git config. Remote URL embeds the PAT — read `GITHUB_REPO_PAT` from the `zcp` service env, not from the remote URL, when re-cloning.
 
 ## Roadmap notes
 
