@@ -6,6 +6,7 @@
 import { api } from './api.js';
 import { toast, dismiss } from './toasts.svelte.js';
 import { activity } from './activity.svelte.js';
+import { fmtDuration, processDurationMs, statusFromProcess, statusLabel } from './format.js';
 
 const TERMINAL = new Set(['FINISHED', 'FAILED', 'CANCELED', 'CANCELLED']);
 const POLL_MS = 2000;
@@ -32,10 +33,10 @@ export function track(process, { onFinished, label } = {}) {
   const toastId = toast.pinned(`p-${process.id}`, {
     kind: 'info',
     title: label || process.actionName || 'Working…',
-    body: `Status: ${process.status || 'PENDING'}`,
+    body: `Status: ${statusLabel(process)}`,
   });
 
-  const entry = { id: process.id, process, startedAt, toastId, onFinished };
+  const entry = { id: process.id, process, startedAt, toastId, onFinished, label };
   tracked.set(process.id, entry);
   syncInflight();
   poll(process.id);
@@ -57,20 +58,24 @@ async function poll(id) {
       dismiss(entry.toastId);
       const ok = fresh.status === 'FINISHED';
       const fail = fresh.status === 'FAILED';
+      const ms = processDurationMs(fresh);
+      const dur = fmtDuration(ms);
+      const errMsg = fresh.errorMessage ? `\n${fresh.errorMessage}` : '';
       (ok ? toast.success : fail ? toast.error : toast.info)(
-        fresh.actionName || 'Process',
-        `${fresh.status}${fresh.errorMessage ? ` — ${fresh.errorMessage}` : ''}`,
+        `${fresh.actionName || 'Process'} — ${fresh.status}`,
+        `Took ${dur}${errMsg}`,
       );
       activity.refresh().catch(() => {});
       try { entry.onFinished?.(fresh); } catch {}
       return;
     }
 
-    // Still in flight — bump the pinned toast with the latest status.
+    // Still in flight — bump the pinned toast with the latest status + live duration.
+    const ms = processDurationMs(entry.process);
     toast.pinned(`p-${entry.process.id}`, {
       kind: 'info',
-      title: entry.process.actionName || 'Working…',
-      body: `Status: ${entry.process.status || 'RUNNING'}`,
+      title: entry.label || entry.process.actionName || 'Working…',
+      body: `${statusLabel(entry.process)} · ${fmtDuration(ms)}`,
     });
 
     if (Date.now() - entry.startedAt > TIMEOUT_MS) {
@@ -86,6 +91,6 @@ async function poll(id) {
     tracked.delete(id);
     syncInflight();
     dismiss(entry.toastId);
-    toast.error(entry.process.actionName || 'Process', err?.message || 'Polling failed');
+    toast.apiError(entry.process.actionName || 'Process', err);
   }
 }

@@ -1,6 +1,8 @@
 <script>
   import Tabs from '../components/Tabs.svelte';
   import Table from '../components/Table.svelte';
+  import Button from '../components/Button.svelte';
+  import CreateProjectModal from '../components/CreateProjectModal.svelte';
   import { api } from '../lib/api.js';
   import { nav, goProject, setTab } from '../lib/nav.svelte.js';
   import { findClientById, loadUser } from '../lib/userStore.svelte.js';
@@ -14,6 +16,7 @@
 
   let active = $state(nav.tab && tabs.some(t => t.id === nav.tab) ? nav.tab : 'projects');
   let query = $state('');
+  let createOpen = $state(false);
 
   let projects = $state([]);
   let projectsLoading = $state(false);
@@ -42,67 +45,48 @@
   $effect(() => {
     const id = nav.org?.id;
     if (!id) return;
-    if (active === 'projects' && loadedFor.projects !== id) {
-      loadedFor.projects = id;
-      loadProjects(id);
-    } else if (active === 'team' && loadedFor.team !== id) {
-      loadedFor.team = id;
-      loadTeam(id);
-    } else if (active === 'billing' && loadedFor.billing !== id) {
-      loadedFor.billing = id;
-      loadBilling(id);
-    }
+    if (active === 'projects' && loadedFor.projects !== id) { loadedFor.projects = id; loadProjects(id); }
+    else if (active === 'team' && loadedFor.team !== id) { loadedFor.team = id; loadTeam(id); }
+    else if (active === 'billing' && loadedFor.billing !== id) { loadedFor.billing = id; loadBilling(id); }
   });
 
   async function loadProjects(id) {
-    projectsLoading = true;
-    projectsError = '';
-    try {
-      const data = await api.clientProjects(id, { limit: 200 });
-      projects = data?.list || [];
-    } catch (e) {
-      projectsError = e?.message || 'Failed to load projects';
-      projects = [];
-    } finally {
-      projectsLoading = false;
-    }
+    projectsLoading = true; projectsError = '';
+    try { const d = await api.clientProjects(id, { limit: 200 }); projects = d?.list || []; }
+    catch (e) { projectsError = e?.message || 'Failed to load projects'; projects = []; }
+    finally { projectsLoading = false; }
   }
-
   async function loadTeam(id) {
-    teamLoading = true;
-    teamError = '';
-    try {
-      const data = await api.clientUsers(id);
-      team = data?.clientUserList || [];
-    } catch (e) {
-      teamError = e?.message || 'Failed to load team';
-      team = [];
-    } finally {
-      teamLoading = false;
-    }
+    teamLoading = true; teamError = '';
+    try { const d = await api.clientUsers(id); team = d?.clientUserList || []; }
+    catch (e) { teamError = e?.message || 'Failed to load team'; team = []; }
+    finally { teamLoading = false; }
   }
-
   async function loadBilling(id) {
-    billingLoading = true;
-    billingError = '';
+    billingLoading = true; billingError = '';
     try {
       const [info, status] = await Promise.all([
         api.clientBilling(id).catch(() => null),
         api.clientBillingStatus(id).catch(() => null),
       ]);
-      billing = info;
-      billingStatus = status;
+      billing = info; billingStatus = status;
     } catch (e) {
       billingError = e?.message || 'Failed to load billing';
-    } finally {
-      billingLoading = false;
+    } finally { billingLoading = false; }
+  }
+
+  function onCreated(project) {
+    if (project) {
+      goProject({ id: project.id, name: project.name }, nav.org);
+    } else {
+      loadedFor.projects = null;
+      loadProjects(nav.org.id);
     }
   }
 
   const filteredProjects = $derived(
-    !query.trim()
-      ? projects
-      : projects.filter((p) => (p.name || '').toLowerCase().includes(query.trim().toLowerCase()))
+    !query.trim() ? projects
+      : projects.filter((p) => (p.name || '').toLowerCase().includes(query.trim().toLowerCase())),
   );
 
   const projectColumns = [
@@ -119,16 +103,13 @@
     { key: 'role', label: 'Role' },
     { key: 'status', label: 'Status' },
   ];
-
-  const teamRows = $derived(
-    team.map((cu) => ({
-      id: cu.id,
-      name: cu.user?.fullName || '(unnamed)',
-      email: cu.user?.email || '',
-      role: cu.roleCode || '',
-      status: cu.status || '',
-    }))
-  );
+  const teamRows = $derived(team.map((cu) => ({
+    id: cu.id,
+    name: cu.user?.fullName || '(unnamed)',
+    email: cu.user?.email || '',
+    role: cu.roleCode || '',
+    status: cu.status || '',
+  })));
 </script>
 
 <Tabs {tabs} bind:active onChange={(id) => setTab(id)} />
@@ -142,9 +123,8 @@
         class="flex-1 rounded-md border border-slate-800 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:border-emerald-600 focus:outline-none"
         bind:value={query}
       />
-      <span class="text-xs text-slate-500">
-        {filteredProjects.length} / {projects.length}
-      </span>
+      <span class="text-xs text-slate-500">{filteredProjects.length} / {projects.length}</span>
+      <Button size="sm" variant="primary" onclick={() => (createOpen = true)}>+ New project</Button>
     </div>
 
     {#if projectsError}
@@ -172,18 +152,14 @@
       Organization settings — not yet implemented.
     </div>
   {:else if active === 'team'}
-    {#if teamError}
-      <p class="mb-3 text-sm text-rose-400">{teamError}</p>
-    {/if}
+    {#if teamError}<p class="mb-3 text-sm text-rose-400">{teamError}</p>{/if}
     {#if teamLoading && !team.length}
       <p class="text-sm text-slate-500">Loading team…</p>
     {:else}
       <Table columns={teamColumns} rows={teamRows} empty="No team members." />
     {/if}
   {:else if active === 'billing'}
-    {#if billingError}
-      <p class="mb-3 text-sm text-rose-400">{billingError}</p>
-    {/if}
+    {#if billingError}<p class="mb-3 text-sm text-rose-400">{billingError}</p>{/if}
     {#if billingLoading}
       <p class="text-sm text-slate-500">Loading billing…</p>
     {:else if !billing && !billingStatus}
@@ -199,9 +175,7 @@
               {#each Object.entries(billingStatus) as [k, v]}
                 <div class="grid grid-cols-2 gap-2">
                   <dt class="text-slate-500">{k}</dt>
-                  <dd class="break-all text-slate-200">
-                    {typeof v === 'object' ? JSON.stringify(v) : String(v ?? '—')}
-                  </dd>
+                  <dd class="break-all text-slate-200">{typeof v === 'object' ? JSON.stringify(v) : String(v ?? '—')}</dd>
                 </div>
               {/each}
             </dl>
@@ -215,9 +189,7 @@
                 {#if v !== null && v !== undefined && v !== ''}
                   <div class="grid grid-cols-2 gap-2">
                     <dt class="text-slate-500">{k}</dt>
-                    <dd class="break-all text-slate-200">
-                      {typeof v === 'object' ? JSON.stringify(v) : String(v)}
-                    </dd>
+                    <dd class="break-all text-slate-200">{typeof v === 'object' ? JSON.stringify(v) : String(v)}</dd>
                   </div>
                 {/if}
               {/each}
@@ -228,3 +200,5 @@
     {/if}
   {/if}
 </div>
+
+<CreateProjectModal bind:open={createOpen} clientId={nav.org?.id} onCreated={onCreated} />

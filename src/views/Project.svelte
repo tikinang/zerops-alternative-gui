@@ -2,10 +2,18 @@
   import Tabs from '../components/Tabs.svelte';
   import Table from '../components/Table.svelte';
   import Button from '../components/Button.svelte';
+  import StatusChip from '../components/StatusChip.svelte';
+  import Duration from '../components/Duration.svelte';
+  import EntityDetail from '../components/EntityDetail.svelte';
   import ProjectActions from '../components/ProjectActions.svelte';
+  import CreateStackModal from '../components/CreateStackModal.svelte';
+  import HttpRoutingForm from '../components/HttpRoutingForm.svelte';
+  import Confirm from '../components/Confirm.svelte';
   import { api } from '../lib/api.js';
+  import { toast } from '../lib/toasts.svelte.js';
   import { nav, goStack, setTab } from '../lib/nav.svelte.js';
   import { findClientById, loadUser } from '../lib/userStore.svelte.js';
+  import { fmtShort } from '../lib/format.js';
 
   const tabs = [
     { id: 'stacks', label: 'Stacks' },
@@ -24,9 +32,18 @@
   let stacks = $state([]); let stacksLoading = $state(false); let stacksError = $state('');
   let processes = $state([]); let processesLoading = $state(false); let processesError = $state('');
   let routing = $state([]); let routingLoading = $state(false); let routingError = $state('');
-  let envFile = $state(null); let envLoading = $state(false); let envError = $state('');
+  let envFile = $state(null); let envFileText = $state(''); let envLoading = $state(false); let envError = $state('');
+  let envSaving = $state(false);
   let logInfo = $state(null); let logLoading = $state(false); let logError = $state('');
   let vpn = $state(null); let vpnLoading = $state(false); let vpnError = $state('');
+
+  let createStackOpen = $state(false);
+  let routingFormOpen = $state(false);
+  let routingFormMode = $state('create');
+  let routingFormRecord = $state(null);
+  let confirmState = $state({ open: false, title: '', body: '', blastRadius: '', danger: false, action: null, label: 'Confirm' });
+  let processDetailOpen = $state(false);
+  let processDetailEntity = $state(null);
 
   let loadedFor = { stacks: null, routing: null, env: null, logs: null, processes: null, vpn: null };
 
@@ -52,28 +69,21 @@
     if (!id) return;
     if (active === 'stacks' && loadedFor.stacks !== id) { loadedFor.stacks = id; loadStacks(id); }
     else if (active === 'processes' && loadedFor.processes !== id) { loadedFor.processes = id; loadProcesses(id); }
-    else if (active === 'routing' && loadedFor.routing !== id) { loadedFor.routing = id; loadRouting(id); }
+    else if (active === 'routing' && loadedFor.routing !== id) { loadedFor.routing = id; loadRouting(id); loadStacksLight(id); }
     else if (active === 'env' && loadedFor.env !== id) { loadedFor.env = id; loadEnv(id); }
     else if (active === 'logs' && loadedFor.logs !== id) { loadedFor.logs = id; loadLog(id); }
     else if (active === 'vpn' && loadedFor.vpn !== id) { loadedFor.vpn = id; loadVpn(id); }
   });
-
-  function refreshActive() {
-    const id = nav.project?.id; if (!id) return;
-    loadedFor = { ...loadedFor, [active]: null };
-    if (active === 'stacks') loadStacks(id);
-    else if (active === 'processes') loadProcesses(id);
-    else if (active === 'routing') loadRouting(id);
-    else if (active === 'env') loadEnv(id);
-    else if (active === 'logs') loadLog(id);
-    else if (active === 'vpn') loadVpn(id);
-  }
 
   async function loadStacks(id) {
     stacksLoading = true; stacksError = '';
     try { const d = await api.projectStacks(id, { limit: 200 }); stacks = d?.list || []; }
     catch (e) { stacksError = e?.message || 'Failed to load stacks'; stacks = []; }
     finally { stacksLoading = false; }
+  }
+  async function loadStacksLight(id) {
+    if (stacks.length) return;
+    try { const d = await api.projectStacks(id, { limit: 200 }); stacks = d?.list || []; } catch {}
   }
   async function loadProcesses(id) {
     processesLoading = true; processesError = '';
@@ -89,9 +99,24 @@
   }
   async function loadEnv(id) {
     envLoading = true; envError = '';
-    try { envFile = await api.projectEnvFile(id); }
+    try {
+      envFile = await api.projectEnvFile(id);
+      envFileText = envFile?.content || '';
+    }
     catch (e) { envError = e?.message || 'Failed to load env file'; envFile = null; }
     finally { envLoading = false; }
+  }
+  async function saveEnv() {
+    if (!nav.project?.id) return;
+    envSaving = true;
+    try {
+      await api.projectEnvFileReplace(nav.project.id, envFileText);
+      toast.success('Project env saved', 'Service stacks restart on next deploy.');
+      loadedFor.env = null;
+      loadEnv(nav.project.id);
+    } catch (e) {
+      toast.apiError('Save env file failed', e);
+    } finally { envSaving = false; }
   }
   async function loadLog(id) {
     logLoading = true; logError = '';
@@ -108,12 +133,48 @@
     } finally { vpnLoading = false; }
   }
 
+  function refreshActive() {
+    const id = nav.project?.id; if (!id) return;
+    loadedFor = { ...loadedFor, [active]: null };
+    if (active === 'stacks') loadStacks(id);
+    else if (active === 'processes') loadProcesses(id);
+    else if (active === 'routing') loadRouting(id);
+    else if (active === 'env') loadEnv(id);
+    else if (active === 'logs') loadLog(id);
+    else if (active === 'vpn') loadVpn(id);
+  }
+
+  function openRoutingCreate() {
+    routingFormMode = 'create';
+    routingFormRecord = null;
+    routingFormOpen = true;
+  }
+  function openRoutingEdit(r) {
+    routingFormMode = 'edit';
+    routingFormRecord = r;
+    routingFormOpen = true;
+  }
+  function deleteRouting(r) {
+    confirmState = {
+      open: true, title: 'Delete HTTP routing',
+      body: `Delete routing for "${(r.domains || []).map((d) => d.domainName).join(', ')}"?`,
+      blastRadius: 'The domains stop resolving to this project. Existing connections drop.',
+      danger: true, label: 'Delete',
+      action: async () => {
+        try {
+          await api.httpRoutingDelete(r.id);
+          toast.success('Routing deleted');
+          loadedFor.routing = null;
+          loadRouting(nav.project.id);
+        } catch (e) { toast.apiError('Delete routing failed', e); }
+      },
+    };
+  }
+
   const filteredStacks = $derived(
     !query.trim() ? stacks
       : stacks.filter((s) => (s.name || '').toLowerCase().includes(query.trim().toLowerCase())),
   );
-
-  function fmtShort(dt) { return dt ? (dt + '').replace('T', ' ').slice(0, 16) : '—'; }
 
   const stackColumns = [
     { key: 'name', label: 'Stack' },
@@ -122,52 +183,6 @@
     { key: 'mode', label: 'Mode' },
     { key: 'subdomain', label: 'Subdomain' },
   ];
-
-  const processColumns = [
-    { key: 'sequence', label: 'Seq' },
-    { key: 'actionName', label: 'Action' },
-    { key: 'status', label: 'Status' },
-    { key: 'targets', label: 'Targets' },
-    { key: 'by', label: 'By' },
-    { key: 'created', label: 'Created' },
-  ];
-  const processRows = $derived(processes.map((p) => ({
-    id: p.id,
-    sequence: p.sequence,
-    actionName: p.actionName,
-    status: p.status,
-    targets: (p.serviceStacks || []).map((s) => s.name).filter(Boolean).join(', ') || '—',
-    by: p.createdByUser?.fullName || p.createdByUser?.email || (p.createdBySystem ? 'system' : '—'),
-    created: fmtShort(p.created),
-  })));
-
-  const routingColumns = [
-    { key: 'domain', label: 'Domain(s)' },
-    { key: 'ssl', label: 'SSL' },
-    { key: 'locations', label: 'Locations' },
-    { key: 'synced', label: 'Synced' },
-  ];
-  const routingRows = $derived(routing.map((r) => ({
-    id: r.id,
-    domain: (r.domains || []).map((d) => d.domainName).join(', ') || '—',
-    ssl: r.sslEnabled ? 'on' : 'off',
-    locations: (r.locations || []).length,
-    synced: r.isSynced ? 'yes' : 'no',
-  })));
-
-  const vpnColumns = [
-    { key: 'name', label: 'Peer' },
-    { key: 'publicKey', label: 'Public key' },
-    { key: 'allowedIp', label: 'Allowed IP' },
-    { key: 'lastHandshake', label: 'Last handshake' },
-  ];
-  const vpnRows = $derived((vpn?.peers || []).map((p, i) => ({
-    id: p.publicKey || i,
-    name: p.name || '—',
-    publicKey: (p.publicKey || '').slice(0, 16) + (p.publicKey?.length > 16 ? '…' : ''),
-    allowedIp: p.allowedIp || '—',
-    lastHandshake: p.lastHandshake ? new Date(p.lastHandshake).toLocaleString() : '—',
-  })));
 </script>
 
 <div class="mb-4 flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
@@ -178,7 +193,7 @@
       <p class="mt-0.5 text-xs text-slate-500">
         Status: <span class="text-slate-300">{detail.status || '—'}</span>
         · Mode: <span class="text-slate-300">{detail.mode || '—'}</span>
-        · Region: <span class="text-slate-300">{detail.primaryInstanceLocation || '—'}</span>
+        · Region: <span class="text-slate-300">{detail.primaryInstanceLocation?.name || detail.primaryInstanceLocation?.id || '—'}</span>
       </p>
     {/if}
   </div>
@@ -202,6 +217,7 @@
         bind:value={query}
       />
       <span class="text-xs text-slate-500">{filteredStacks.length} / {stacks.length}</span>
+      <Button size="sm" variant="primary" onclick={() => (createStackOpen = true)}>+ New stack</Button>
     </div>
 
     {#if stacksError}<p class="mb-3 text-sm text-rose-400">{stacksError}</p>{/if}
@@ -211,11 +227,9 @@
       <Table
         columns={stackColumns}
         rows={filteredStacks.map(s => ({
-          id: s.id,
-          name: s.name,
+          id: s.id, name: s.name,
           type: s.serviceStackTypeInfo?.serviceStackTypeName || s.serviceStackTypeId || '',
-          status: s.status,
-          mode: s.mode,
+          status: s.status, mode: s.mode,
           subdomain: s.subdomainAccess ? 'on' : 'off',
         }))}
         onRowClick={(row) => goStack({ id: row.id, name: row.name, type: row.type }, nav.project, nav.org)}
@@ -227,26 +241,100 @@
     {#if processesError}<p class="mb-3 text-sm text-rose-400">{processesError}</p>{/if}
     {#if processesLoading && !processes.length}
       <p class="text-sm text-slate-500">Loading processes…</p>
+    {:else if !processes.length}
+      <p class="text-sm text-slate-500">No processes recorded.</p>
     {:else}
-      <Table columns={processColumns} rows={processRows} empty="No processes recorded." />
+      <div class="overflow-hidden rounded-md border border-slate-800 bg-slate-900">
+        <table class="w-full text-left text-sm">
+          <thead class="bg-slate-950 text-xs uppercase tracking-widest text-slate-500">
+            <tr>
+              <th class="px-4 py-2">Seq</th>
+              <th class="px-4 py-2">Action</th>
+              <th class="px-4 py-2">Status</th>
+              <th class="px-4 py-2">Duration</th>
+              <th class="px-4 py-2">Targets</th>
+              <th class="px-4 py-2">By</th>
+              <th class="px-4 py-2">Created</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each processes as p (p.id)}
+              <tr class="cursor-pointer border-t border-slate-800 hover:bg-slate-800/60" onclick={() => { processDetailEntity = p; processDetailOpen = true; }}>
+                <td class="px-4 py-2 font-mono text-xs text-slate-300">{p.sequence}</td>
+                <td class="px-4 py-2 font-mono text-xs text-slate-200">{p.actionName}</td>
+                <td class="px-4 py-2"><StatusChip entity={p} /></td>
+                <td class="px-4 py-2 text-xs"><Duration entity={p} /></td>
+                <td class="px-4 py-2 text-xs text-slate-300">{(p.serviceStacks || []).map((s) => s.name).filter(Boolean).join(', ') || '—'}</td>
+                <td class="px-4 py-2 text-xs text-slate-400">{p.createdByUser?.fullName || p.createdByUser?.email || (p.createdBySystem ? 'system' : '—')}</td>
+                <td class="px-4 py-2 text-xs text-slate-400">{fmtShort(p.created)}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
     {/if}
 
   {:else if active === 'routing'}
+    <div class="mb-3 flex justify-end">
+      <Button size="sm" variant="primary" onclick={openRoutingCreate}>+ New routing</Button>
+    </div>
     {#if routingError}<p class="mb-3 text-sm text-rose-400">{routingError}</p>{/if}
     {#if routingLoading && !routing.length}
       <p class="text-sm text-slate-500">Loading routing…</p>
+    {:else if !routing.length}
+      <p class="text-sm text-slate-500">No public HTTP routing configured.</p>
     {:else}
-      <Table columns={routingColumns} rows={routingRows} empty="No public HTTP routing configured." />
+      <div class="overflow-hidden rounded-md border border-slate-800 bg-slate-900">
+        <table class="w-full text-left text-sm">
+          <thead class="bg-slate-950 text-xs uppercase tracking-widest text-slate-500">
+            <tr>
+              <th class="px-4 py-2">Domain(s)</th>
+              <th class="px-4 py-2">SSL</th>
+              <th class="px-4 py-2">CDN</th>
+              <th class="px-4 py-2">Locations</th>
+              <th class="px-4 py-2">Synced</th>
+              <th class="px-4 py-2"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each routing as r (r.id)}
+              <tr class="border-t border-slate-800 hover:bg-slate-800/40">
+                <td class="px-4 py-2 text-xs text-slate-200">{(r.domains || []).map((d) => d.domainName).join(', ') || '—'}</td>
+                <td class="px-4 py-2 text-xs text-slate-300">{r.sslEnabled ? 'on' : 'off'}</td>
+                <td class="px-4 py-2 text-xs text-slate-300">{r.cdnEnabled ? 'on' : 'off'}</td>
+                <td class="px-4 py-2 text-xs text-slate-300">{(r.locations || []).length}</td>
+                <td class="px-4 py-2 text-xs text-slate-300">{r.isSynced ? 'yes' : 'no'}</td>
+                <td class="px-4 py-2 text-right text-xs">
+                  <button class="mr-2 text-emerald-400 hover:underline" onclick={() => openRoutingEdit(r)} disabled={!r.isEditable}>Edit</button>
+                  <button class="text-rose-400 hover:underline" onclick={() => deleteRouting(r)} disabled={!r.isEditable}>Delete</button>
+                </td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
     {/if}
 
   {:else if active === 'env'}
     {#if envError}<p class="mb-3 text-sm text-rose-400">{envError}</p>{/if}
     {#if envLoading}
       <p class="text-sm text-slate-500">Loading env file…</p>
-    {:else if envFile}
-      <pre class="max-h-[60vh] overflow-auto rounded-md border border-slate-800 bg-slate-950 p-4 text-xs text-slate-200">{envFile.content || JSON.stringify(envFile, null, 2)}</pre>
     {:else}
-      <p class="text-sm text-slate-500">No project-level env file.</p>
+      <p class="mb-2 text-xs text-slate-500">
+        Edits the entire project env-file in one shot via <code>PUT /project/&#123;id&#125;/env/file</code>. Use <code>KEY=value</code> on each line; <code>SECRET_KEY=&lt;@generateRandomString(32)&gt;</code> to generate at apply time.
+      </p>
+      <textarea
+        rows="14"
+        spellcheck="false"
+        class="w-full rounded-md border border-slate-800 bg-slate-950 px-3 py-2 font-mono text-xs text-slate-100 focus:border-emerald-600 focus:outline-none"
+        bind:value={envFileText}
+      ></textarea>
+      <div class="mt-2 flex justify-end gap-2">
+        <Button size="sm" variant="ghost" onclick={() => { envFileText = envFile?.content || ''; }}>Reset</Button>
+        <Button size="sm" variant="primary" onclick={saveEnv} disabled={envSaving}>
+          {envSaving ? 'Saving…' : 'Save env file'}
+        </Button>
+      </div>
     {/if}
 
   {:else if active === 'logs'}
@@ -293,7 +381,32 @@
           <div class="mt-1 font-mono text-slate-200">{vpn.project?.dns || '—'}</div>
         </div>
       </div>
-      <Table columns={vpnColumns} rows={vpnRows} empty="No VPN peers configured." />
+      {#if !(vpn.peers || []).length}
+        <p class="text-sm text-slate-500">No VPN peers configured.</p>
+      {:else}
+        <div class="overflow-hidden rounded-md border border-slate-800 bg-slate-900">
+          <table class="w-full text-left text-sm">
+            <thead class="bg-slate-950 text-xs uppercase tracking-widest text-slate-500">
+              <tr>
+                <th class="px-4 py-2">Peer</th>
+                <th class="px-4 py-2">Public key</th>
+                <th class="px-4 py-2">Allowed IP</th>
+                <th class="px-4 py-2">Last handshake</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each vpn.peers as p}
+                <tr class="border-t border-slate-800">
+                  <td class="px-4 py-2 text-xs text-slate-200">{p.name || '—'}</td>
+                  <td class="px-4 py-2 font-mono text-[10px] text-slate-400">{(p.publicKey || '').slice(0, 24)}…</td>
+                  <td class="px-4 py-2 font-mono text-xs text-slate-300">{p.allowedIp || '—'}</td>
+                  <td class="px-4 py-2 text-xs text-slate-400">{p.lastHandshake ? new Date(p.lastHandshake).toLocaleString() : '—'}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+      {/if}
     {/if}
 
   {:else if active === 'detail'}
@@ -316,3 +429,16 @@
     {/if}
   {/if}
 </div>
+
+<CreateStackModal bind:open={createStackOpen} projectId={nav.project?.id} onCreated={() => { loadedFor.stacks = null; loadStacks(nav.project.id); }} />
+<HttpRoutingForm bind:open={routingFormOpen} mode={routingFormMode} projectId={nav.project?.id} record={routingFormRecord} stacks={stacks} onChanged={() => { loadedFor.routing = null; loadRouting(nav.project.id); }} />
+<Confirm
+  bind:open={confirmState.open}
+  title={confirmState.title}
+  body={confirmState.body}
+  blastRadius={confirmState.blastRadius}
+  confirmLabel={confirmState.label}
+  danger={confirmState.danger}
+  onConfirm={confirmState.action}
+/>
+<EntityDetail bind:open={processDetailOpen} entity={processDetailEntity} />

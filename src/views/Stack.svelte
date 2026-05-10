@@ -2,19 +2,27 @@
   import Tabs from '../components/Tabs.svelte';
   import Table from '../components/Table.svelte';
   import Button from '../components/Button.svelte';
+  import StatusChip from '../components/StatusChip.svelte';
+  import Duration from '../components/Duration.svelte';
   import StackActions from '../components/StackActions.svelte';
   import AppVersionDetail from '../components/AppVersionDetail.svelte';
+  import EnvVarForm from '../components/EnvVarForm.svelte';
+  import PortRoutingForm from '../components/PortRoutingForm.svelte';
+  import EntityDetail from '../components/EntityDetail.svelte';
+  import Confirm from '../components/Confirm.svelte';
   import { api } from '../lib/api.js';
+  import { toast } from '../lib/toasts.svelte.js';
+  import { track } from '../lib/processTracker.svelte.js';
   import { nav, setTab, goContainer } from '../lib/nav.svelte.js';
   import { findClientById, loadUser } from '../lib/userStore.svelte.js';
+  import { fmtShort } from '../lib/format.js';
 
   const tabs = [
     { id: 'containers', label: 'Containers' },
     { id: 'processes', label: 'Processes' },
     { id: 'pipelines', label: 'Pipelines & CI/CD' },
-    { id: 'env', label: 'Environment' },
+    { id: 'env', label: 'Environment variables' },
     { id: 'service', label: 'Service info' },
-    { id: 'userdata', label: 'User data' },
     { id: 'routing', label: 'Port routing' },
     { id: 'backups', label: 'Backups' },
     { id: 'scaling', label: 'Scaling' },
@@ -33,17 +41,26 @@
   let backups = $state(null); let backupsLoading = $state(false); let backupsError = $state('');
   let envVars = $state([]); let envLoading = $state(false); let envError = $state('');
   let revealedKeys = $state(new Set());
+  let envFilter = $state('user'); // user | all
   let logInfo = $state(null); let logLoading = $state(false); let logError = $state('');
   let serviceInfo = $state(null); let serviceLoading = $state(false); let serviceError = $state('');
-  let userData = $state([]); let udLoading = $state(false); let udError = $state('');
 
   let selectedAppVersion = $state(null);
   let appVersionOpen = $state(false);
 
-  let loadedFor = {
-    containers: null, processes: null, routing: null, pipelines: null,
-    backups: null, env: null, logs: null, service: null, userdata: null,
-  };
+  let envFormOpen = $state(false);
+  let envFormMode = $state('create');
+  let envFormRecord = $state(null);
+
+  let portFormOpen = $state(false);
+  let portFormMode = $state('create');
+  let portFormRecord = $state(null);
+
+  let confirmState = $state({ open: false, title: '', body: '', blastRadius: '', danger: false, action: null, label: 'Confirm' });
+  let processDetailOpen = $state(false);
+  let processDetailEntity = $state(null);
+
+  let loadedFor = { containers: null, processes: null, routing: null, pipelines: null, backups: null, env: null, logs: null, service: null };
 
   function loadDetail() {
     if (!nav.stack?.id) return;
@@ -84,7 +101,6 @@
     else if (active === 'backups' && loadedFor.backups !== id) { loadedFor.backups = id; loadBackups(id); }
     else if (active === 'env' && loadedFor.env !== id) { loadedFor.env = id; loadEnv(id); }
     else if (active === 'service' && loadedFor.service !== id) { loadedFor.service = id; loadService(id); }
-    else if (active === 'userdata' && loadedFor.userdata !== id) { loadedFor.userdata = id; loadUserData(id); }
     else if (active === 'logs' && loadedFor.logs !== id && nav.project?.id) { loadedFor.logs = id; loadLog(nav.project.id); }
   });
 
@@ -98,7 +114,6 @@
     else if (active === 'backups') loadBackups(id);
     else if (active === 'env') loadEnv(id);
     else if (active === 'service') loadService(id);
-    else if (active === 'userdata') loadUserData(id);
     else if (active === 'logs' && nav.project?.id) loadLog(nav.project.id);
   }
 
@@ -136,7 +151,10 @@
   }
   async function loadEnv(id) {
     envLoading = true; envError = '';
-    try { const d = await api.stackEnv(id); envVars = d?.items || []; }
+    try {
+      const d = await api.stackUserData(id, { limit: 200 });
+      envVars = d?.list || d?.items || [];
+    }
     catch (e) { envError = e?.message || 'Failed to load env'; envVars = []; }
     finally { envLoading = false; }
   }
@@ -148,12 +166,6 @@
       else { serviceError = e?.message || 'Failed to load service info'; serviceInfo = null; }
     } finally { serviceLoading = false; }
   }
-  async function loadUserData(id) {
-    udLoading = true; udError = '';
-    try { const d = await api.stackUserData(id, { limit: 100 }); userData = d?.list || d?.items || []; }
-    catch (e) { udError = e?.message || 'Failed to load user data'; userData = []; }
-    finally { udLoading = false; }
-  }
   async function loadLog(projectId) {
     logLoading = true; logError = '';
     try { logInfo = await api.projectLog(projectId); }
@@ -161,12 +173,55 @@
     finally { logLoading = false; }
   }
 
+  // ---- Env CRUD helpers ----
+  function openEnvCreate() { envFormMode = 'create'; envFormRecord = null; envFormOpen = true; }
+  function openEnvEdit(rec) { envFormMode = 'edit'; envFormRecord = rec; envFormOpen = true; }
+  function deleteEnv(rec) {
+    confirmState = {
+      open: true, title: 'Delete env variable',
+      body: `Delete env variable "${rec.key}"?`,
+      blastRadius: 'The variable disappears from the next container start. Existing containers keep the value until restart.',
+      danger: true, label: 'Delete',
+      action: async () => {
+        try {
+          const proc = await api.userDataDelete(rec.id);
+          if (proc?.id) track(proc, { label: `Delete env ${rec.key}`, onFinished: () => { loadedFor.env = null; loadEnv(nav.stack.id); } });
+          else { loadedFor.env = null; loadEnv(nav.stack.id); }
+          toast.success('Delete requested', rec.key);
+        } catch (e) { toast.apiError('Delete env failed', e); }
+      },
+    };
+  }
+
+  // ---- Port routing CRUD ----
+  function openPortCreate() { portFormMode = 'create'; portFormRecord = null; portFormOpen = true; }
+  function openPortEdit(rec) { portFormMode = 'edit'; portFormRecord = rec; portFormOpen = true; }
+  function deletePort(rec) {
+    confirmState = {
+      open: true, title: 'Delete public port routing',
+      body: `Stop accepting public traffic on port ${rec.publicPort}?`,
+      blastRadius: 'External clients on this public port lose access immediately.',
+      danger: true, label: 'Delete',
+      action: async () => {
+        try {
+          await api.portRoutingDelete(rec.id);
+          toast.success('Port routing deleted');
+          loadedFor.routing = null;
+          loadPortRouting(nav.stack.id);
+        } catch (e) { toast.apiError('Delete port routing failed', e); }
+      },
+    };
+  }
+
   function toggleReveal(id) {
     const next = new Set(revealedKeys);
     if (next.has(id)) next.delete(id); else next.add(id);
     revealedKeys = next;
   }
-
+  function isEditableType(t) {
+    if (!t) return true;
+    return t === 'EDITABLE' || t === 'SECRET';
+  }
   function fmtBytes(n) {
     if (!n && n !== 0) return '—';
     const u = ['B','KB','MB','GB','TB'];
@@ -175,10 +230,7 @@
     return `${v.toFixed(v >= 10 || i === 0 ? 0 : 1)} ${u[i]}`;
   }
 
-  function fmtDt(dt) { return dt ? new Date(dt).toLocaleString() : '—'; }
-  function fmtShort(dt) { return dt ? (dt + '').replace('T', ' ').slice(0, 16) : '—'; }
-
-  // ---- Column / row defs ----
+  // ---- Tables ----
   const containerColumns = [
     { key: 'number', label: '#' },
     { key: 'hostname', label: 'Hostname' },
@@ -197,70 +249,12 @@
     created: fmtShort(c.created),
   })));
 
-  const processColumns = [
-    { key: 'sequence', label: 'Seq' },
-    { key: 'actionName', label: 'Action' },
-    { key: 'status', label: 'Status' },
-    { key: 'by', label: 'By' },
-    { key: 'created', label: 'Created' },
-  ];
-  const processRows = $derived(processes.map((p) => ({
-    id: p.id,
-    sequence: p.sequence,
-    actionName: p.actionName,
-    status: p.status,
-    by: p.createdByUser?.fullName || p.createdByUser?.email || (p.createdBySystem ? 'system' : '—'),
-    created: fmtShort(p.created),
-  })));
+  const visibleEnv = $derived(
+    envFilter === 'user'
+      ? envVars.filter((v) => v.type !== 'INTERNAL' && (v.type === 'EDITABLE' || v.type === 'SECRET' || !v.type))
+      : envVars.filter((v) => v.type !== 'INTERNAL'),
+  );
 
-  const portRoutingColumns = [
-    { key: 'publicPort', label: 'Public port' },
-    { key: 'internalPort', label: 'Internal port' },
-    { key: 'firewall', label: 'Firewall' },
-    { key: 'synced', label: 'Synced' },
-  ];
-  const portRoutingRows = $derived(portRouting.map((r) => ({
-    id: r.id,
-    publicPort: r.publicPort,
-    internalPort: r.internalPort,
-    firewall: (r.firewallIpRanges || []).join(', ') || (r.firewallAllowMyIp ? 'my-ip' : 'open'),
-    synced: r.isSynced ? 'yes' : 'no',
-  })));
-
-  const appVersionColumns = [
-    { key: 'sequence', label: 'Seq' },
-    { key: 'status', label: 'Status' },
-    { key: 'name', label: 'Name' },
-    { key: 'author', label: 'By' },
-    { key: 'created', label: 'Created' },
-  ];
-  const appVersionRows = $derived(appVersions.map((v) => ({
-    id: v.id,
-    sequence: v.sequence,
-    status: v.status || (v.activationDate ? 'ACTIVE' : '—'),
-    name: v.name || v.build?.commitMessage?.slice(0, 60) || '—',
-    author: v.createdByUser?.fullName || v.createdByUser?.email || '—',
-    created: fmtShort(v.created),
-  })));
-
-  const backupColumns = [
-    { key: 'name', label: 'When' },
-    { key: 'size', label: 'Size' },
-    { key: 'tags', label: 'Tags' },
-    { key: 'mode', label: 'Mode' },
-  ];
-  const backupRows = $derived((backups?.files || []).map((f, i) => ({
-    id: f.path || i,
-    name: f.name,
-    size: fmtBytes(f.size),
-    tags: (f.metadata?.tags || []).join(', ') || '—',
-    mode: f.metadata?.mode || '—',
-  })));
-
-  function openAppVersion(row) {
-    selectedAppVersion = appVersions.find((v) => v.id === row.id) || null;
-    if (selectedAppVersion) appVersionOpen = true;
-  }
   function openContainer(row) {
     const c = containers.find((x) => x.id === row.id);
     if (!c) return;
@@ -303,8 +297,35 @@
     {#if processesError}<p class="mb-3 text-sm text-rose-400">{processesError}</p>{/if}
     {#if processesLoading && !processes.length}
       <p class="text-sm text-slate-500">Loading processes…</p>
+    {:else if !processes.length}
+      <p class="text-sm text-slate-500">No processes recorded for this stack.</p>
     {:else}
-      <Table columns={processColumns} rows={processRows} empty="No processes recorded for this stack." />
+      <div class="overflow-hidden rounded-md border border-slate-800 bg-slate-900">
+        <table class="w-full text-left text-sm">
+          <thead class="bg-slate-950 text-xs uppercase tracking-widest text-slate-500">
+            <tr>
+              <th class="px-4 py-2">Seq</th>
+              <th class="px-4 py-2">Action</th>
+              <th class="px-4 py-2">Status</th>
+              <th class="px-4 py-2">Duration</th>
+              <th class="px-4 py-2">By</th>
+              <th class="px-4 py-2">Created</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each processes as p (p.id)}
+              <tr class="cursor-pointer border-t border-slate-800 hover:bg-slate-800/60" onclick={() => { processDetailEntity = p; processDetailOpen = true; }}>
+                <td class="px-4 py-2 font-mono text-xs text-slate-300">{p.sequence}</td>
+                <td class="px-4 py-2 font-mono text-xs text-slate-200">{p.actionName}</td>
+                <td class="px-4 py-2"><StatusChip entity={p} /></td>
+                <td class="px-4 py-2 text-xs"><Duration entity={p} /></td>
+                <td class="px-4 py-2 text-xs text-slate-400">{p.createdByUser?.fullName || p.createdByUser?.email || (p.createdBySystem ? 'system' : '—')}</td>
+                <td class="px-4 py-2 text-xs text-slate-400">{fmtShort(p.created)}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
     {/if}
 
   {:else if active === 'pipelines'}
@@ -312,16 +333,46 @@
     {#if avLoading && !appVersions.length}
       <p class="text-sm text-slate-500">Loading app versions…</p>
     {:else}
-      <Table columns={appVersionColumns} rows={appVersionRows} onRowClick={openAppVersion} empty="No app versions yet." />
-      <p class="mt-2 text-xs text-slate-500">Click a row for build / source detail.</p>
+      <div class="overflow-hidden rounded-md border border-slate-800 bg-slate-900">
+        <table class="w-full text-left text-sm">
+          <thead class="bg-slate-950 text-xs uppercase tracking-widest text-slate-500">
+            <tr>
+              <th class="px-4 py-2">Seq</th>
+              <th class="px-4 py-2">Status</th>
+              <th class="px-4 py-2">Source</th>
+              <th class="px-4 py-2">By</th>
+              <th class="px-4 py-2">Created</th>
+            </tr>
+          </thead>
+          <tbody>
+            {#each appVersions as v (v.id)}
+              <tr class="cursor-pointer border-t border-slate-800 hover:bg-slate-800/60" onclick={() => { selectedAppVersion = v; appVersionOpen = true; }}>
+                <td class="px-4 py-2 font-mono text-xs text-slate-300">{v.sequence}</td>
+                <td class="px-4 py-2"><StatusChip status={v.status || (v.activationDate ? 'ACTIVE' : 'UNKNOWN')} /></td>
+                <td class="px-4 py-2 text-xs text-slate-300">{v.source || '—'}</td>
+                <td class="px-4 py-2 text-xs text-slate-400">{v.createdByUser?.fullName || v.createdByUser?.email || '—'}</td>
+                <td class="px-4 py-2 text-xs text-slate-400">{fmtShort(v.created)}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      </div>
+      <p class="mt-2 text-xs text-slate-500">Click a row to view the zerops.yaml used at deploy + build details.</p>
     {/if}
 
   {:else if active === 'env'}
+    <div class="mb-3 flex items-center justify-between">
+      <div class="flex overflow-hidden rounded-md border border-slate-800 text-xs">
+        <button class="px-3 py-1.5 {envFilter === 'user' ? 'bg-slate-800 text-slate-100' : 'text-slate-400 hover:bg-slate-900'}" onclick={() => (envFilter = 'user')}>User-set</button>
+        <button class="px-3 py-1.5 {envFilter === 'all' ? 'bg-slate-800 text-slate-100' : 'text-slate-400 hover:bg-slate-900'}" onclick={() => (envFilter = 'all')}>All ({envVars.length})</button>
+      </div>
+      <Button size="sm" variant="primary" onclick={openEnvCreate}>+ New variable</Button>
+    </div>
     {#if envError}<p class="mb-3 text-sm text-rose-400">{envError}</p>{/if}
     {#if envLoading && !envVars.length}
       <p class="text-sm text-slate-500">Loading env…</p>
-    {:else if !envVars.length}
-      <p class="text-sm text-slate-500">No environment variables on this stack.</p>
+    {:else if !visibleEnv.length}
+      <p class="text-sm text-slate-500">No environment variables in this view.</p>
     {:else}
       <div class="overflow-hidden rounded-md border border-slate-800 bg-slate-900">
         <table class="w-full text-left text-sm">
@@ -329,29 +380,41 @@
             <tr>
               <th class="px-4 py-2">Key</th>
               <th class="px-4 py-2">Value</th>
-              <th class="px-4 py-2">Sensitive</th>
+              <th class="px-4 py-2">Type</th>
+              <th class="px-4 py-2"></th>
             </tr>
           </thead>
           <tbody>
-            {#each envVars as e}
+            {#each visibleEnv as e (e.id)}
               <tr class="border-t border-slate-800">
                 <td class="px-4 py-2 font-mono text-xs text-slate-200">{e.key}</td>
                 <td class="px-4 py-2 font-mono text-xs">
-                  {#if e.sensitive && !revealedKeys.has(e.id)}
+                  {#if (e.sensitive || e.type === 'SECRET') && !revealedKeys.has(e.id)}
                     <button class="text-slate-500 hover:text-emerald-400" onclick={() => toggleReveal(e.id)}>•••••• reveal</button>
                   {:else}
                     <span class="break-all text-slate-200">{e.content}</span>
-                    {#if e.sensitive}
+                    {#if e.sensitive || e.type === 'SECRET'}
                       <button class="ml-2 text-xs text-slate-500 hover:text-rose-400" onclick={() => toggleReveal(e.id)}>hide</button>
                     {/if}
                   {/if}
                 </td>
-                <td class="px-4 py-2 text-xs text-slate-400">{e.sensitive ? 'yes' : 'no'}</td>
+                <td class="px-4 py-2 text-xs text-slate-400">{e.type || '—'}</td>
+                <td class="px-4 py-2 text-right text-xs">
+                  {#if isEditableType(e.type)}
+                    <button class="mr-2 text-emerald-400 hover:underline" onclick={() => openEnvEdit(e)}>Edit</button>
+                    <button class="text-rose-400 hover:underline" onclick={() => deleteEnv(e)}>Delete</button>
+                  {:else}
+                    <span class="text-slate-600">platform-managed</span>
+                  {/if}
+                </td>
               </tr>
             {/each}
           </tbody>
         </table>
       </div>
+      <p class="mt-2 text-xs text-slate-500">
+        Records with type READ_ONLY / ENV / INTERNAL are platform- or zerops.yaml-managed and can't be edited here. Switch to "All" to see them.
+      </p>
     {/if}
 
   {:else if active === 'service'}
@@ -378,44 +441,50 @@
       </div>
     {/if}
 
-  {:else if active === 'userdata'}
-    {#if udError}<p class="mb-3 text-sm text-rose-400">{udError}</p>{/if}
-    {#if udLoading && !userData.length}
-      <p class="text-sm text-slate-500">Loading user data…</p>
-    {:else if !userData.length}
-      <p class="text-sm text-slate-500">No user-data records on this stack.</p>
+  {:else if active === 'routing'}
+    <div class="mb-3 flex justify-end">
+      <Button size="sm" variant="primary" onclick={openPortCreate}>+ New port routing</Button>
+    </div>
+    {#if portError}<p class="mb-3 text-sm text-rose-400">{portError}</p>{/if}
+    {#if portLoading && !portRouting.length}
+      <p class="text-sm text-slate-500">Loading port routing…</p>
+    {:else if !portRouting.length}
+      <p class="text-sm text-slate-500">No public port routing configured.</p>
     {:else}
       <div class="overflow-hidden rounded-md border border-slate-800 bg-slate-900">
         <table class="w-full text-left text-sm">
           <thead class="bg-slate-950 text-xs uppercase tracking-widest text-slate-500">
             <tr>
-              <th class="px-4 py-2">Key</th>
-              <th class="px-4 py-2">Value</th>
-              <th class="px-4 py-2">Type</th>
+              <th class="px-4 py-2">Public port</th>
+              <th class="px-4 py-2">Internal port</th>
+              <th class="px-4 py-2">Proto</th>
+              <th class="px-4 py-2">Firewall</th>
+              <th class="px-4 py-2">Synced</th>
+              <th class="px-4 py-2"></th>
             </tr>
           </thead>
           <tbody>
-            {#each userData as ud (ud.id)}
+            {#each portRouting as r (r.id)}
               <tr class="border-t border-slate-800">
-                <td class="px-4 py-2 font-mono text-xs text-slate-200">{ud.key}</td>
-                <td class="px-4 py-2 font-mono text-xs text-slate-200 break-all">{ud.content || ud.value || ''}</td>
-                <td class="px-4 py-2 text-xs text-slate-400">{ud.type || (ud.sensitive ? 'sensitive' : '—')}</td>
+                <td class="px-4 py-2 font-mono text-sm text-slate-200">{r.publicPort}</td>
+                <td class="px-4 py-2 font-mono text-sm text-slate-200">{r.internalPort}</td>
+                <td class="px-4 py-2 text-xs text-slate-300">{r.internalProtocol}</td>
+                <td class="px-4 py-2 text-xs text-slate-300">
+                  {(r.firewallIpRanges || []).join(', ') || (r.firewallAllowMyIp ? 'my-ip' : 'open')}
+                </td>
+                <td class="px-4 py-2 text-xs text-slate-300">{r.isSynced ? 'yes' : 'no'}</td>
+                <td class="px-4 py-2 text-right text-xs">
+                  <button class="mr-2 text-emerald-400 hover:underline" onclick={() => openPortEdit(r)}>Edit</button>
+                  <button class="text-rose-400 hover:underline" onclick={() => deletePort(r)}>Delete</button>
+                </td>
               </tr>
             {/each}
           </tbody>
         </table>
       </div>
     {/if}
-
-  {:else if active === 'routing'}
-    {#if portError}<p class="mb-3 text-sm text-rose-400">{portError}</p>{/if}
-    {#if portLoading && !portRouting.length}
-      <p class="text-sm text-slate-500">Loading port routing…</p>
-    {:else}
-      <Table columns={portRoutingColumns} rows={portRoutingRows} empty="No public port routing." />
-    {/if}
     <p class="mt-3 text-xs text-slate-500">
-      HTTP routing (domains, SSL, locations) is project-scoped — see the project's Access &amp; routing tab.
+      HTTP routing (domains, SSL, locations) is project-scoped — see the project's HTTP routing tab.
     </p>
 
   {:else if active === 'backups'}
@@ -430,7 +499,15 @@
       <div class="mb-3 text-xs text-slate-500">
         Period: <span class="text-slate-300">{backups.backupPeriod || '—'}</span>
       </div>
-      <Table columns={backupColumns} rows={backupRows} empty="No backup files." />
+      <Table
+        columns={[{key:'name',label:'When'},{key:'size',label:'Size'},{key:'tags',label:'Tags'},{key:'mode',label:'Mode'}]}
+        rows={(backups.files || []).map((f, i) => ({
+          id: f.path || i, name: f.name, size: fmtBytes(f.size),
+          tags: (f.metadata?.tags || []).join(', ') || '—',
+          mode: f.metadata?.mode || '—',
+        }))}
+        empty="No backup files."
+      />
     {/if}
 
   {:else if active === 'scaling'}
@@ -474,9 +551,6 @@
           {#if logInfo.urlPlain}<li><a class="text-emerald-400 hover:underline" href={logInfo.urlPlain} target="_blank" rel="noreferrer">Plain stream ↗</a></li>{/if}
           {#if logInfo.url}<li><a class="text-emerald-400 hover:underline" href={logInfo.url} target="_blank" rel="noreferrer">Default ↗</a></li>{/if}
         </ul>
-        <p class="mt-3 text-xs text-slate-500">
-          Token expires {logInfo.expiration ? new Date(logInfo.expiration).toLocaleString() : '—'}.
-        </p>
       </div>
     {:else}
       <p class="text-sm text-slate-500">No log endpoint info.</p>
@@ -485,3 +559,28 @@
 </div>
 
 <AppVersionDetail bind:open={appVersionOpen} version={selectedAppVersion} />
+<EnvVarForm
+  bind:open={envFormOpen}
+  scope="stack"
+  mode={envFormMode}
+  parentId={nav.stack?.id}
+  record={envFormRecord}
+  onChanged={() => { loadedFor.env = null; loadEnv(nav.stack.id); }}
+/>
+<PortRoutingForm
+  bind:open={portFormOpen}
+  mode={portFormMode}
+  stackId={nav.stack?.id}
+  record={portFormRecord}
+  onChanged={() => { loadedFor.routing = null; loadPortRouting(nav.stack.id); }}
+/>
+<EntityDetail bind:open={processDetailOpen} entity={processDetailEntity} />
+<Confirm
+  bind:open={confirmState.open}
+  title={confirmState.title}
+  body={confirmState.body}
+  blastRadius={confirmState.blastRadius}
+  confirmLabel={confirmState.label}
+  danger={confirmState.danger}
+  onConfirm={confirmState.action}
+/>

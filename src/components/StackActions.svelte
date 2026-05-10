@@ -25,7 +25,7 @@
         onChanged?.();
       }
     } catch (e) {
-      toast.error(label, e?.message || 'Failed');
+      toast.apiError(label, e);
     }
   }
 

@@ -68,6 +68,7 @@ export async function acknowledge(id) {
 }
 
 export async function acknowledgeAll() {
-  await api.notificationAckAll();
+  if (!activity.clientId) return;
+  await api.notificationAckAll(activity.clientId);
   activity.list = activity.list.map((n) => ({ ...n, acknowledged: true }));
 }

@@ -7,16 +7,24 @@
     if (kind === 'warning') return 'border-amber-700 bg-amber-950/80 text-amber-100';
     return 'border-slate-700 bg-slate-900/90 text-slate-100';
   }
+
+  function isMultiLine(s) {
+    return typeof s === 'string' && (s.includes('\n') || s.length > 80);
+  }
 </script>
 
-<div class="pointer-events-none fixed bottom-4 right-4 z-50 flex w-[380px] max-w-[calc(100vw-2rem)] flex-col gap-2">
+<div class="pointer-events-none fixed bottom-4 right-4 z-50 flex w-[440px] max-w-[calc(100vw-2rem)] flex-col gap-2">
   {#each toasts.items as t (t.id)}
     <div class="pointer-events-auto rounded-md border px-4 py-3 text-sm shadow-lg backdrop-blur {colorFor(t.kind)}">
       <div class="flex items-start gap-3">
         <div class="min-w-0 flex-1">
           <div class="font-semibold">{t.title}</div>
           {#if t.body}
-            <div class="mt-1 text-xs opacity-80 break-words">{t.body}</div>
+            {#if isMultiLine(t.body)}
+              <pre class="mt-1 max-h-64 overflow-auto whitespace-pre-wrap break-words rounded bg-black/30 p-2 font-mono text-[11px] leading-snug opacity-90">{t.body}</pre>
+            {:else}
+              <div class="mt-1 text-xs opacity-80 break-words">{t.body}</div>
+            {/if}
           {/if}
         </div>
         <button
