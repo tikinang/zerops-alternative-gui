@@ -15,7 +15,8 @@
   import { initRouter, syncToUrl } from './lib/router.svelte.js';
   import { loadUser, clearUser } from './lib/userStore.svelte.js';
   import { setOn401 } from './lib/api.js';
-  import { activity } from './lib/activity.svelte.js';
+  import { activity, setClient as activitySetClient, clearActivity } from './lib/activity.svelte.js';
+  import { clearTracker } from './lib/processTracker.svelte.js';
   import { toast } from './lib/toasts.svelte.js';
 
   let routerReady = $state(false);
@@ -39,7 +40,7 @@
   // Bind the activity (notifications) store to the currently focused org.
   $effect(() => {
     if (token.loggedIn && nav.org?.id) {
-      activity.setClient(nav.org.id);
+      activitySetClient(nav.org.id);
     }
   });
 
@@ -56,6 +57,8 @@
   });
 
   function logout() {
+    clearTracker();
+    clearActivity();
     clearAuth();
     clearUser();
     goUser();

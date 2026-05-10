@@ -26,6 +26,11 @@
   ];
 
   let active = $state(nav.tab && tabs.some((t) => t.id === nav.tab) ? nav.tab : 'stacks');
+  $effect(() => {
+    if (nav.tab && nav.tab !== active && tabs.some((t) => t.id === nav.tab)) {
+      active = nav.tab;
+    }
+  });
   let query = $state('');
 
   let detail = $state(null);
@@ -109,11 +114,17 @@
   async function saveEnv() {
     if (!nav.project?.id) return;
     envSaving = true;
+    // Snapshot what we're submitting so we can detect post-save edits.
+    const submitted = envFileText;
     try {
-      await api.projectEnvFileReplace(nav.project.id, envFileText);
+      await api.projectEnvFileReplace(nav.project.id, submitted);
       toast.success('Project env saved', 'Service stacks restart on next deploy.');
-      loadedFor.env = null;
-      loadEnv(nav.project.id);
+      // Re-fetch the canonical rendering, but only overwrite the textarea
+      // if the user hasn't kept typing during the save round-trip.
+      const fresh = await api.projectEnvFile(nav.project.id);
+      envFile = fresh;
+      if (envFileText === submitted) envFileText = fresh?.content || '';
+      else toast.info('Env file updated on server', 'Your unsaved edits were kept locally — Reset to discard.');
     } catch (e) {
       toast.apiError('Save env file failed', e);
     } finally { envSaving = false; }

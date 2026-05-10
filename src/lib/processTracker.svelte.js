@@ -5,8 +5,8 @@
 
 import { api } from './api.js';
 import { toast, dismiss } from './toasts.svelte.js';
-import { activity } from './activity.svelte.js';
-import { fmtDuration, processDurationMs, statusFromProcess, statusLabel } from './format.js';
+import { refresh as refreshActivity } from './activity.svelte.js';
+import { fmtDuration, processDurationMs, statusLabel } from './format.js';
 
 const TERMINAL = new Set(['FINISHED', 'FAILED', 'CANCELED', 'CANCELLED']);
 const POLL_MS = 2000;
@@ -22,6 +22,7 @@ function syncInflight() {
     actionName: t.process.actionName,
     status: t.process.status,
     started: t.startedAt,
+    process: t.process,
   }));
 }
 
@@ -36,7 +37,7 @@ export function track(process, { onFinished, label } = {}) {
     body: `Status: ${statusLabel(process)}`,
   });
 
-  const entry = { id: process.id, process, startedAt, toastId, onFinished, label };
+  const entry = { id: process.id, process, startedAt, toastId, onFinished, label, cancelled: false };
   tracked.set(process.id, entry);
   syncInflight();
   poll(process.id);
@@ -45,10 +46,12 @@ export function track(process, { onFinished, label } = {}) {
 
 async function poll(id) {
   const entry = tracked.get(id);
-  if (!entry) return;
+  if (!entry || entry.cancelled) return;
 
   try {
     const fresh = await api.process(id);
+    // Entry might have been cancelled while the request was in flight.
+    if (entry.cancelled || !tracked.has(id)) return;
     entry.process = fresh;
     syncInflight();
 
@@ -65,7 +68,7 @@ async function poll(id) {
         `${fresh.actionName || 'Process'} — ${fresh.status}`,
         `Took ${dur}${errMsg}`,
       );
-      activity.refresh().catch(() => {});
+      refreshActivity().catch(() => {});
       try { entry.onFinished?.(fresh); } catch {}
       return;
     }
@@ -88,9 +91,23 @@ async function poll(id) {
 
     setTimeout(() => poll(id), POLL_MS);
   } catch (err) {
+    // Don't surface an error toast if we were cancelled (e.g. logout). The
+    // 401 handler in api.js already toasts "Session expired" once.
+    if (entry.cancelled || !tracked.has(id)) return;
     tracked.delete(id);
     syncInflight();
     dismiss(entry.toastId);
     toast.apiError(entry.process.actionName || 'Process', err);
   }
+}
+
+// Drop every tracked process — used on logout so background polls don't
+// fire 401s and stack up "Session expired" toasts.
+export function clearTracker() {
+  for (const entry of tracked.values()) {
+    entry.cancelled = true;
+    dismiss(entry.toastId);
+  }
+  tracked.clear();
+  syncInflight();
 }

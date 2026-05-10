@@ -28,16 +28,27 @@
   });
 
   // Live-refresh while in flight.
+  // Depend on `loaded?.id` (stable while watching the same entity) and a
+  // boolean for in-flight, NOT on `loaded` itself — otherwise every poll
+  // mutates loaded and re-runs the effect, recreating the timer.
+  const liveId = $derived(open ? loaded?.id : null);
+  const live = $derived(loaded != null && isInflight(loaded));
   $effect(() => {
-    if (!open || !loaded) return;
-    if (!isInflight(loaded)) return;
+    if (!liveId || !live) return;
+    let cancelled = false;
     const tick = () => {
-      const id = loaded?.id;
-      if (!id) return;
-      api.process(id).then((p) => { loaded = p; }).catch(() => {});
+      if (cancelled || !liveId) return;
+      api.process(liveId)
+        .then((p) => { if (!cancelled) loaded = p; })
+        .catch(() => {})
+        .finally(() => {
+          if (cancelled) return;
+          if (loaded && !isInflight(loaded)) return;
+          handle = setTimeout(tick, 2000);
+        });
     };
-    const h = setInterval(tick, 2000);
-    return () => clearInterval(h);
+    let handle = setTimeout(tick, 2000);
+    return () => { cancelled = true; clearTimeout(handle); };
   });
 
   async function loadById() {

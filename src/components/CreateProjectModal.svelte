@@ -3,8 +3,13 @@
   import Button from './Button.svelte';
   import { api } from '../lib/api.js';
   import { toast } from '../lib/toasts.svelte.js';
+  import { userStore, loadUser } from '../lib/userStore.svelte.js';
 
   let { open = $bindable(false), clientId, onCreated } = $props();
+
+  // Make sure we have the user's id available — needed for the userRoles
+  // entry that names the creator as OWNER. Cheap if already cached.
+  $effect(() => { if (open) loadUser().catch(() => {}); });
 
   let name = $state('');
   let description = $state('');
@@ -22,11 +27,19 @@
   async function submit() {
     if (!name.trim()) { toast.error('Name is required'); return; }
     busy = true;
+    const userId = userStore.data?.id;
+    if (!userId) {
+      toast.error('Create project failed', 'User not loaded yet — try again in a moment.');
+      busy = false;
+      return;
+    }
     const body = {
       name: name.trim(),
       mode,
       tagList: tagsInput.split(',').map((s) => s.trim()).filter(Boolean),
-      userRoles: [],
+      // The creator MUST own the project — without this the API creates a
+      // project the requester can't see.
+      userRoles: [{ id: userId, roleCode: 'OWNER' }],
       envIsolation,
       publicIpV4Shared,
     };

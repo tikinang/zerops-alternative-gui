@@ -3,6 +3,7 @@
   import StatusChip from './StatusChip.svelte';
   import Duration from './Duration.svelte';
   import { activity, unreadNotifications, acknowledge, acknowledgeAll } from '../lib/activity.svelte.js';
+  import { tracker } from '../lib/processTracker.svelte.js';
   import { nav, goNotifications } from '../lib/nav.svelte.js';
   import { isInflight } from '../lib/format.js';
 
@@ -12,6 +13,18 @@
 
   const unread = $derived(unreadNotifications());
   const recent = $derived(activity.list.slice(0, 8));
+
+  // In-flight count = local tracker (immediate, fires on user action) ∪
+  // notifications still in-flight on the server (caught by the next poll).
+  // Dedupe by id so a process tracked locally that also surfaces in the
+  // notification list isn't counted twice.
+  const inflightCount = $derived.by(() => {
+    const ids = new Set(tracker.inflight.map((p) => p.id));
+    for (const n of activity.list) {
+      if (isInflight(n)) ids.add(n.id);
+    }
+    return ids.size;
+  });
 
   function handleAck(id, e) {
     e.stopPropagation();
@@ -40,8 +53,6 @@
       return () => window.removeEventListener('click', close, { capture: true });
     }
   });
-
-  const inflightCount = $derived(activity.list.filter(isInflight).length);
 </script>
 
 <div class="relative bell-popover">
@@ -59,8 +70,12 @@
       <span class="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-sky-500 px-1 text-[10px] font-bold text-slate-950 animate-pulse" title="In-flight processes">
         {inflightCount}
       </span>
-    {:else if unread.length > 0}
-      <span class="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-emerald-500 px-1 text-[10px] font-bold text-slate-950">
+    {/if}
+    {#if unread.length > 0}
+      <span
+        class="absolute flex h-4 min-w-4 items-center justify-center rounded-full bg-emerald-500 px-1 text-[10px] font-bold text-slate-950 {inflightCount > 0 ? '-bottom-0.5 -right-0.5' : '-top-0.5 -right-0.5'}"
+        title="Unread notifications"
+      >
         {unread.length > 99 ? '99+' : unread.length}
       </span>
     {/if}

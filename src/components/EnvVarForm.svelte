@@ -32,7 +32,12 @@
   async function submit() {
     if (!key.trim()) { toast.error('Key is required'); return; }
     busy = true;
-    const body = { key: key.trim(), content };
+    // In edit mode, lock the key to the persisted value — the API requires
+    // `key` in the PUT body but won't accept a rename. Reading from
+    // record.key (not the disabled input) keeps the body correct even if
+    // the disabled flag is ever lifted.
+    const submittedKey = mode === 'edit' && record?.key ? record.key : key.trim();
+    const body = { key: submittedKey, content };
     if (scope === 'project') body.sensitive = sensitive;
     try {
       let res;

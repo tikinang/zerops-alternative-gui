@@ -3,7 +3,6 @@
   import Button from './Button.svelte';
   import { api } from '../lib/api.js';
   import { toast } from '../lib/toasts.svelte.js';
-  import { track } from '../lib/processTracker.svelte.js';
 
   let { open = $bindable(false), projectId, onCreated } = $props();
 
@@ -28,11 +27,17 @@
     if (!yaml.trim()) { toast.error('YAML is required'); return; }
     busy = true;
     try {
+      // ResponseProjectImport: { projectId, projectName, serviceStacks[] }.
+      // Each new stack triggers its own first-deploy process server-side;
+      // the activity log will surface them on the next poll. We just
+      // refresh the parent's list.
       const res = await api.projectStackImport(projectId, { yaml });
-      toast.success('Stack import accepted', res?.serviceStacks?.map((s) => s.name).join(', ') || '');
-      // Some import responses carry a process; track it.
-      if (res?.process?.id) track(res.process, { label: 'Import service stack', onFinished: onCreated });
-      else onCreated?.(res);
+      const names = (res?.serviceStacks || []).map((s) => s.name).filter(Boolean).join(', ');
+      toast.success(
+        'Stack import accepted',
+        names ? `Created: ${names}` : 'Refreshing…',
+      );
+      onCreated?.(res);
       open = false;
     } catch (e) {
       toast.apiError('Import failed', e);

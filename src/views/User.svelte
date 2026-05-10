@@ -11,6 +11,11 @@
   ];
 
   let active = $state(nav.tab && tabs.some(t => t.id === nav.tab) ? nav.tab : 'clients');
+  $effect(() => {
+    if (nav.tab && nav.tab !== active && tabs.some((t) => t.id === nav.tab)) {
+      active = nav.tab;
+    }
+  });
 
   $effect(() => { loadUser().catch(() => {}); });
 

@@ -8,7 +8,7 @@ zerops:
       base: nodejs@22
       buildCommands:
         - npm install
-      deployFiles: ./
+      deployFiles: [.]
       cache:
         - node_modules
     run:
@@ -16,6 +16,11 @@ zerops:
       ports:
         - port: 3000
           httpSupport: true
+      # SSHFS doesn't surface inotify events; tell Vite/chokidar to poll.
+      # Without this the dev server has to be restarted manually after edits.
+      envVariables:
+        CHOKIDAR_USEPOLLING: "1"
+        CHOKIDAR_INTERVAL: "1000"
       start: zsc noop --silent
 
   # Stage container — Nginx serves the compiled static SPA.

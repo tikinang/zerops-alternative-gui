@@ -34,22 +34,37 @@ async function call(method, path, body, { auth = true } = {}) {
   return data;
 }
 
+// Real Zerops error envelope:
+//   { "error": { "code": "...", "message": "...", "meta": [{ "error", "code", "metadata" }] } }
+// (verified against the live ranpu API, 2026-05-10).
+//
+// Some endpoints flatten into { error: "string", meta: [...] }; we handle both.
 function extractError(data, status) {
   if (!data) return `HTTP ${status}`;
   if (typeof data === 'string') return data;
-  if (data.error) {
-    if (data.meta && Array.isArray(data.meta) && data.meta.length) {
-      const m = data.meta[0];
-      if (m?.metadata) {
-        const fields = Object.entries(m.metadata)
-          .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`)
-          .join('; ');
-        return fields ? `${data.error} (${fields})` : data.error;
-      }
-    }
-    return data.error;
+
+  const errNode = data.error;
+  let message;
+  let meta;
+  if (errNode && typeof errNode === 'object') {
+    message = errNode.message || errNode.code;
+    meta = Array.isArray(errNode.meta) ? errNode.meta : null;
+  } else if (typeof errNode === 'string') {
+    message = errNode;
+    meta = Array.isArray(data.meta) ? data.meta : null;
+  } else {
+    return `HTTP ${status}`;
   }
-  return `HTTP ${status}`;
+
+  const metadata = meta?.[0]?.metadata;
+  if (metadata && typeof metadata === 'object') {
+    const fields = Object.entries(metadata)
+      .map(([k, v]) => `${k}: ${Array.isArray(v) ? v.join(', ') : v}`)
+      .join('; ');
+    if (fields) return `${message || `HTTP ${status}`} (${fields})`;
+  }
+
+  return message || `HTTP ${status}`;
 }
 
 const qs = (params) => {
@@ -72,6 +87,9 @@ export const api = {
   totpLogin: (totpToken) =>
     call('POST', '/api/rest/public/2fa/totp/login', { token: totpToken }),
   authLogout: () => call('POST', '/api/rest/public/auth/logout', undefined, { auth: false }),
+  // TODO: not yet wired into the SPA. Sessions just expire to 401 → re-login.
+  // Add an interceptor in call() before the 401 handler runs once we want
+  // background refresh.
   authRefresh: (refreshTokenId) =>
     call('POST', '/api/rest/public/auth/refresh', { refreshTokenId }, { auth: false }),
   authInfo: () => call('GET', '/api/rest/public/auth/info'),
@@ -94,8 +112,11 @@ export const api = {
   notification: (id) => call('GET', `/api/rest/public/user-notification/${id}`),
   notificationAck: (id) =>
     call('PUT', `/api/rest/public/user-notification/${id}/acknowledge`),
-  notificationAckAll: (clientId) =>
-    call('PUT', '/api/rest/public/user-notification/acknowledge-all', { clientId }),
+  // Body is RequestUserNotification: { clientId, projectId?, serviceStackId? }.
+  // Pass an object so callers can narrow by project/stack.
+  notificationAckAll: (body) =>
+    call('PUT', '/api/rest/public/user-notification/acknowledge-all',
+      typeof body === 'string' ? { clientId: body } : body),
 
   // ---------------- Project listing & detail ----------------
   clientProjects: (clientId, params) =>
@@ -148,7 +169,9 @@ export const api = {
   stackDelete: (id) => call('DELETE', `/api/rest/public/service-stack/${id}`),
   stackContainers: (id, params) =>
     call('GET', `/api/rest/public/service-stack/${id}/container${qs(params)}`),
-  stackEnv: (id) => call('GET', `/api/rest/public/service-stack/${id}/env`),
+  // Note: /service-stack/{id}/env returns the resolved effective env. The
+  // SPA reads env vars from /service-stack/{id}/user-data instead because
+  // those records are CRUD-able (id, type=READ_ONLY|EDITABLE|SECRET|ENV).
   stackProcesses: (id, params) =>
     call('GET', `/api/rest/public/service-stack/${id}/process${qs(params)}`),
   stackAppVersions: (id, params) =>

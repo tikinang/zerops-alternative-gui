@@ -4,9 +4,13 @@
   import { auth, setAuth, clearAuth } from '../lib/auth.svelte.js';
 
   // Resume mid-2FA if a previous attempt persisted a token but didn't verify.
-  const startsAtTotp = !!auth.accessToken
-    && (auth.twoFAMethods || []).length > 0
-    && auth.twoFAVerified !== true;
+  // Reactive: tracks `auth` so a fresh login attempt re-evaluates after
+  // setAuth() lands.
+  const startsAtTotp = $derived(
+    !!auth.accessToken
+      && (auth.twoFAMethods || []).length > 0
+      && auth.twoFAVerified !== true,
+  );
 
   let email = $state('');
   let password = $state('');
@@ -14,21 +18,36 @@
   let stage = $state(startsAtTotp ? 'totp' : 'credentials');
   let busy = $state(false);
   let error = $state('');
+  let errorPayload = $state(null);
+
+  // When the underlying auth state flips into pending-2FA (e.g. after
+  // submitCredentials runs), follow into the totp stage. We don't want to
+  // tie `stage` directly to startsAtTotp because the user can navigate
+  // back to credentials — so only auto-advance forward.
+  $effect(() => {
+    if (startsAtTotp && stage === 'credentials') stage = 'totp';
+  });
+
+  function showError(err) {
+    error = err?.message || 'Failed.';
+    errorPayload = err?.payload ?? null;
+  }
 
   async function submitCredentials(e) {
     e.preventDefault();
     busy = true;
     error = '';
+    errorPayload = null;
     try {
       const res = await api.authLogin(email, password);
-      const auth = res.auth;
-      if (!auth?.accessToken) throw new Error('Login response had no access token.');
+      const payload = res?.auth;
+      if (!payload?.accessToken) throw new Error('Login response had no access token.');
 
-      setAuth(auth);
+      setAuth(payload);
 
-      const needs2FA = (auth.twoFAMethods || []).length > 0 && auth.twoFAVerified !== true;
+      const needs2FA = (payload.twoFAMethods || []).length > 0 && payload.twoFAVerified !== true;
       if (needs2FA) {
-        const methods = (auth.twoFAMethods || []).map((m) => m.toUpperCase());
+        const methods = (payload.twoFAMethods || []).map((m) => m.toUpperCase());
         if (!methods.includes('TOTP')) {
           error = `2FA required, but no TOTP method available (${methods.join(', ')}).`;
           return;
@@ -36,7 +55,7 @@
         stage = 'totp';
       }
     } catch (err) {
-      error = err?.message || 'Login failed.';
+      showError(err);
     } finally {
       busy = false;
     }
@@ -46,11 +65,12 @@
     e.preventDefault();
     busy = true;
     error = '';
+    errorPayload = null;
     try {
       const res = await api.totpLogin(totpCode.trim());
       if (res?.auth) setAuth(res.auth);
     } catch (err) {
-      error = err?.message || 'TOTP verification failed.';
+      showError(err);
     } finally {
       busy = false;
     }
@@ -61,6 +81,12 @@
     stage = 'credentials';
     totpCode = '';
     error = '';
+    errorPayload = null;
+  }
+
+  function fmtPayload(p) {
+    if (p == null) return '';
+    try { return JSON.stringify(p, null, 2); } catch { return String(p); }
   }
 </script>
 
@@ -124,7 +150,10 @@
 
     {#if error}
       <div class="mt-4 rounded-md border border-rose-800 bg-rose-950/40 p-3 text-xs text-rose-300">
-        {error}
+        <div class="font-semibold">{error}</div>
+        {#if errorPayload}
+          <pre class="mt-2 max-h-48 overflow-auto whitespace-pre-wrap break-words rounded bg-black/40 p-2 font-mono text-[11px] leading-snug text-rose-200/80">{fmtPayload(errorPayload)}</pre>
+        {/if}
       </div>
     {/if}
 

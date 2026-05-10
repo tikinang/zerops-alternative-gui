@@ -30,6 +30,14 @@
   ];
 
   let active = $state(nav.tab && tabs.some((t) => t.id === nav.tab) ? nav.tab : 'containers');
+  // Mirror nav.tab → active so browser back / popstate keeps the rendered
+  // tab in sync with the URL. The forward direction (tab click → nav.tab)
+  // happens via the Tabs onChange callback.
+  $effect(() => {
+    if (nav.tab && nav.tab !== active && tabs.some((t) => t.id === nav.tab)) {
+      active = nav.tab;
+    }
+  });
   let detail = $state(null);
   let detailLoading = $state(true);
   let detailError = $state('');

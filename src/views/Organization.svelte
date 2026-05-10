@@ -15,6 +15,11 @@
   ];
 
   let active = $state(nav.tab && tabs.some(t => t.id === nav.tab) ? nav.tab : 'projects');
+  $effect(() => {
+    if (nav.tab && nav.tab !== active && tabs.some((t) => t.id === nav.tab)) {
+      active = nav.tab;
+    }
+  });
   let query = $state('');
   let createOpen = $state(false);
 

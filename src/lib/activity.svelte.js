@@ -15,13 +15,11 @@ export const activity = $state({
   loading: false,
   error: null,
   lastLoaded: 0,
-  refresh,
-  setClient,
 });
 
 let pollHandle = null;
 
-function setClient(id) {
+export function setClient(id) {
   if (activity.clientId === id) return;
   activity.clientId = id;
   activity.list = [];
@@ -31,7 +29,7 @@ function setClient(id) {
   startPolling();
 }
 
-async function refresh({ limit = 50 } = {}) {
+export async function refresh({ limit = 50 } = {}) {
   if (!activity.clientId || !token.loggedIn) return;
   activity.loading = true;
   activity.error = null;
@@ -44,6 +42,18 @@ async function refresh({ limit = 50 } = {}) {
     activity.error = e?.message || 'Failed to load notifications';
   } finally {
     activity.loading = false;
+  }
+}
+
+export function clearActivity() {
+  activity.clientId = null;
+  activity.list = [];
+  activity.totalCount = 0;
+  activity.error = null;
+  activity.lastLoaded = 0;
+  if (pollHandle) {
+    clearInterval(pollHandle);
+    pollHandle = null;
   }
 }
 
@@ -67,8 +77,20 @@ export async function acknowledge(id) {
   }
 }
 
-export async function acknowledgeAll() {
+// Acknowledge all notifications, optionally narrowed by project / stack.
+// Call signature: acknowledgeAll() acks everything in the org;
+// acknowledgeAll({ projectId, serviceStackId }) narrows the scope.
+export async function acknowledgeAll(scope = {}) {
   if (!activity.clientId) return;
-  await api.notificationAckAll(activity.clientId);
-  activity.list = activity.list.map((n) => ({ ...n, acknowledged: true }));
+  const body = { clientId: activity.clientId };
+  if (scope.projectId) body.projectId = scope.projectId;
+  if (scope.serviceStackId) body.serviceStackId = scope.serviceStackId;
+  await api.notificationAckAll(body);
+  // Optimistically mark — the server will eventually push the same state on
+  // the next poll, but the user sees the change immediately.
+  activity.list = activity.list.map((n) => {
+    if (scope.projectId && n.projectId !== scope.projectId) return n;
+    if (scope.serviceStackId && !(n.serviceStacks || []).some((s) => s.id === scope.serviceStackId)) return n;
+    return { ...n, acknowledged: true };
+  });
 }

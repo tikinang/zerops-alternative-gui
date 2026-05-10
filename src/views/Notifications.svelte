@@ -3,7 +3,7 @@
   import StatusChip from '../components/StatusChip.svelte';
   import Duration from '../components/Duration.svelte';
   import EntityDetail from '../components/EntityDetail.svelte';
-  import { activity, acknowledge, acknowledgeAll, unreadNotifications } from '../lib/activity.svelte.js';
+  import { activity, acknowledge, acknowledgeAll, refresh as refreshActivity, unreadNotifications } from '../lib/activity.svelte.js';
   import { nav, goStack, goProject } from '../lib/nav.svelte.js';
   import { fmtShort, isInflight } from '../lib/format.js';
 
@@ -53,7 +53,7 @@
       <button class="px-3 py-1.5 {filter === 'inflight' ? 'bg-slate-800 text-slate-100' : 'text-slate-400 hover:bg-slate-900'}" onclick={() => (filter = 'inflight')}>In-flight ({inflight.length})</button>
       <button class="px-3 py-1.5 {filter === 'unread' ? 'bg-slate-800 text-slate-100' : 'text-slate-400 hover:bg-slate-900'}" onclick={() => (filter = 'unread')}>Unread ({unread.length})</button>
     </div>
-    <Button variant="ghost" size="sm" onclick={() => activity.refresh()} disabled={activity.loading}>
+    <Button variant="ghost" size="sm" onclick={() => refreshActivity()} disabled={activity.loading}>
       {activity.loading ? 'Refreshing…' : 'Refresh'}
     </Button>
     {#if unread.length > 0}
