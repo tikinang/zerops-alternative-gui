@@ -1,0 +1,38 @@
+zerops:
+  # Dev container — kept alive for live editing via SSH.
+  # Agent / developer starts the Vite dev server through
+  # `zerops_dev_server` after each deploy; container itself
+  # stays idle (zsc noop).
+  - setup: appdev
+    build:
+      base: nodejs@22
+      buildCommands:
+        - npm install
+      deployFiles: ./
+      cache:
+        - node_modules
+    run:
+      base: nodejs@22
+      ports:
+        - port: 3000
+          httpSupport: true
+      start: zsc noop --silent
+
+  # Stage container — Nginx serves the compiled static SPA.
+  # Build base is nodejs@22 (so Vite can compile), runtime
+  # base is `static` (Nginx with built-in SPA fallback —
+  # unmatched routes serve index.html, no extra config).
+  - setup: appstage
+    build:
+      base: nodejs@22
+      buildCommands:
+        - npm install
+        - npm run build
+      # Trailing `~` strips the `dist/` prefix so index.html
+      # lands at /var/www/index.html for Nginx.
+      deployFiles:
+        - dist/~
+      cache:
+        - node_modules
+    run:
+      base: static
